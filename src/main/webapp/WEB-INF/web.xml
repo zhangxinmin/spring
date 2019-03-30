@@ -7,7 +7,7 @@
   
   <servlet>
     <servlet-name>dispatchServlet</servlet-name>
-    <servlet-class>com.test.myv1.DispatcherServlet</servlet-class>
+    <servlet-class>com.test.myv2.DispatcherServlet</servlet-class>
     <init-param>
       <param-name>contextConfigLocation</param-name>
       <param-value>application.properties</param-value>

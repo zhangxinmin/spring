@@ -1,4 +1,4 @@
-package com.test.myv1;
+package com.test.myv2;
 
 import com.test.myv1.anno.*;
 
@@ -10,25 +10,30 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.net.URL;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * spring mvc 版本1  实现功能
- * 1、自定义注解Controller  Service  Param Autowired RequestMapping
- * 2、根据配置文件扫描包下的类 如果有注解（Controller  Service ） 则 将类型保存
- * 3、将第二步中的类进行实例化，并保存在实例容器中
- * 4、根据类的属性进行注入,如果有 Autowired 注解则 进行注入
- * 5、有Controller 注解的类的方法 如果有 RequestMapping 注解 则 将RequestMapping 中配置的路径 和方法对应关系 保存在容器中
- * 6、将该servlet配置到 web.xml 中，这样当有请求过来时就根据 访问路径 到 容器中 找到 对应的方法 ，然后解析参数执行 并将结果返回即可。
- *
- *
- */
+**spring mvc 版本1 实现功能
+**1、自定义注解Controller Service Param Autowired RequestMapping
+**2、根据配置文件扫描包下的类 如果有注解（Controller Service ） 则 将类型保存
+**3、将第二步中的类进行实例化，并保存在实例容器中
+**4、根据类的属性进行注入,如果有 Autowired 注解则 进行注入
+**5、有Controller 注解的类的方法 如果有 RequestMapping 注解 则 将RequestMapping 中配置的路径 和方法对应关系 保存在容器中
+**6、将该servlet配置到 web.xml 中，这样当有请求过来时就根据 访问路径 到 容器中 找到 对应的方法 ，然后解析参数执行 并将结果返回即可。
+**spring mvc 版本2 实现功能
+** 1、RequestMapping 路径支持正则
+  * 2、url 参数支持强制类型转换
+  *3、优化方法调用逻辑
+  *
+  * *
+**/
 public class DispatcherServlet extends HttpServlet {
     //保存配置内容
     private Properties contextConfig = new Properties();
@@ -36,9 +41,10 @@ public class DispatcherServlet extends HttpServlet {
     List<String> classNames = new ArrayList<>();
      //bean 容器
     Map<String,Object> ioc = new HashMap<String,Object>();
-
-    Map<String,Method> handlerMappings = new HashMap<String,Method>();
-
+    //解析路径和方法关系容器  V1 版本使用 Map 保存 访问路径和执行方法的关系
+    //Map<String,Method> handlerMappings = new HashMap<String,Method>();
+    //V2版本使用List 保存 访问路径和执行方法的关系
+     List<Handler> handlerMappings = new ArrayList<>();
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
         doPost(req, resp);
@@ -55,51 +61,42 @@ public class DispatcherServlet extends HttpServlet {
      * @param resp
      */
     private void doDispatch(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        String url= req.getRequestURI();
-        String contextPath = req.getContextPath();
-        url=url.replaceAll(contextPath,"").replaceAll("/+","/");
-        if(!this.handlerMappings.containsKey(url)){
-            resp.getWriter().write("404 not fund");
+        //获取到需要执行的方法
+        Handler handler= getHandler(req);
+        if(null==handler){
+            resp.getWriter().write("404 not fund ");
             return;
         }
-        //获取到方法然后传参执行方法
-        Method method = this.handlerMappings.get(url);
-         //获取到方法所有的参数
-         Parameter [] params =method.getParameters();
-         //获取到传入的所有参数
-         Map<String,String[]> paramMap = req.getParameterMap();
-         //创建数组保存调用方法需要的参数
-         Object[] args = new Object[params.length];
-         for(int i=0;i<params.length;i++){
-             Parameter param = params[i];
-             //如果是req 或 resp 参数 则 直接 赋值
-             if(param.getType().equals(HttpServletRequest.class)){
-                 args[i]=req;
-                 continue;
-             }
-             if(param.getType().equals(HttpServletResponse.class)){
-                 args[i]=resp;
-                 continue;
-             }
-             //获取参数名 并将将参数值保存到args 的相应位置
-             String name = param.getName();
-             if(param.isAnnotationPresent(Param.class)){
-                 String  pname = param.getAnnotation(Param.class).value();
-                 if(!"".equals(pname)){
-                     name = pname;
-                 }
-             }
-             String[] paraval=paramMap.get(name);
-             args[i]=convert(param.getType(),Arrays.toString(paraval)
-                     .replaceAll("\\[|\\]","")
-                     .replaceAll("\\s",""));
+        Class[] paramTypes = handler.getMethod().getParameterTypes();
+        //创建调用方法参数值数组
+        Object[] args =new Object[paramTypes.length];
+        Map<String,String[]> params=req.getParameterMap();
+        //根据出入的参数 名 将 取值 转化为 对应的类型 并保存到 参数数组中的响应位置
+        for(Map.Entry<String,String[]> entry:params.entrySet()){
+            String value = Arrays.toString(entry.getValue()).replaceAll("\\[|\\]","")
+                    .replaceAll("\\s","");
+            String name = entry.getKey();
+            if(handler.getParamIndexMapping().containsKey(name)){
+                int index =handler.getParamIndexMapping().get(name);
+                args[index]=convert(paramTypes[index],value);
+            }
+        }
+        //如果方法需要 req he  res  则 传入
+        if(handler.getParamIndexMapping().containsKey(HttpServletResponse.class.getName())){
+            args[handler.getParamIndexMapping().get(HttpServletResponse.class.getName())]=resp;
+        }
+        if(handler.getParamIndexMapping().containsKey(HttpServletRequest.class.getName())){
+            args[handler.getParamIndexMapping().get(HttpServletRequest.class.getName())]=req;
+        }
 
-         }
+
+
+
+
          //执行方法
-         String beanName = toLowerFirstCase(method.getDeclaringClass().getSimpleName());
         Object res= null;
         try {
-            res = method.invoke(ioc.get(beanName),args);
+            res = handler.getMethod().invoke(handler.getController(),args);
         } catch (IllegalAccessException e) {
             e.printStackTrace();
         } catch (InvocationTargetException e) {
@@ -136,6 +133,20 @@ public class DispatcherServlet extends HttpServlet {
         initHandlerMapping();
 
     }
+    //根据请求 找到对应的 请求处理handler
+    private Handler getHandler(HttpServletRequest req){
+        String url= req.getRequestURI();
+        String contextPath = req.getContextPath();
+        url=url.replaceAll(contextPath,"").replaceAll("/+","/");
+        for(Handler handler:handlerMappings){
+            Matcher macher= handler.getPattern().matcher(url);
+            if(!macher.matches()){
+                continue;
+            }
+            return handler;
+        }
+        return null;
+    }
 
     private void autowired() {
         if(ioc.isEmpty())return;
@@ -163,6 +174,7 @@ public class DispatcherServlet extends HttpServlet {
         }
 
     }
+
     private void initHandlerMapping() {
         if(ioc.isEmpty())return;
         for(Map.Entry<String,Object> entry:ioc.entrySet()){
@@ -185,7 +197,8 @@ public class DispatcherServlet extends HttpServlet {
                 RequestMapping requestMapping= method.getAnnotation(RequestMapping.class);
                 String methodUrl = requestMapping.value();
                 String url = (baseUrl+"/"+methodUrl).replaceAll("/+","/");
-                handlerMappings.put(url,method);
+                Pattern pattern =Pattern.compile(url);
+                handlerMappings.add(new Handler(method,entry.getValue(),pattern));
                 System.out.println("mapped :【"+url+":"+method+"】");
             }
         }
@@ -272,3 +285,6 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 }
+
+
+

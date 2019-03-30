@@ -8,4 +8,9 @@ public class DemoServiceImpl implements DemoService {
     public int add(int a, int b){
         return a+b;
     }
+
+    @Override
+    public String hello(String name) {
+        return "Nice to meet you "+ name+" !";
+    }
 }
